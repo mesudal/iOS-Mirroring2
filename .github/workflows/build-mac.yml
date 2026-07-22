@@ -10,7 +10,7 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: macos-13
+          - os: macos-12
             arch: Intel
           - os: macos-14
             arch: AppleSilicon
