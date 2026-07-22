@@ -20,27 +20,42 @@ import tkinter as tk
 from tkinter import filedialog, messagebox
 import customtkinter as ctk
 
-try:
-    import win32gui
-    import win32process
-    import win32clipboard
-    HAVE_PYWIN32 = True
-except ImportError:
-    HAVE_PYWIN32 = False
+import platform
+IS_MAC = platform.system() == 'Darwin'
+IS_WIN = platform.system() == 'Windows'
+
+HAVE_PYWIN32 = False
+HAVE_MAC_QUARTZ = False
+
+if IS_WIN:
+    try:
+        import win32gui
+        import win32process
+        import win32clipboard
+        HAVE_PYWIN32 = True
+    except ImportError:
+        pass
+elif IS_MAC:
+    try:
+        import Quartz
+        HAVE_MAC_QUARTZ = True
+    except ImportError:
+        pass
 
 # Hides the console window for spawned subprocesses
-CREATE_NO_WINDOW = 0x08000000
+CREATE_NO_WINDOW = 0x08000000 if IS_WIN else 0
 
 def copy_bmp_to_clipboard(filepath):
-    if not HAVE_PYWIN32:
-        return
     try:
-        with open(filepath, 'rb') as f:
-            data = f.read()[14:]
-        win32clipboard.OpenClipboard()
-        win32clipboard.EmptyClipboard()
-        win32clipboard.SetClipboardData(win32clipboard.CF_DIB, data)
-        win32clipboard.CloseClipboard()
+        if IS_WIN and HAVE_PYWIN32:
+            with open(filepath, 'rb') as f:
+                data = f.read()[14:]
+            win32clipboard.OpenClipboard()
+            win32clipboard.EmptyClipboard()
+            win32clipboard.SetClipboardData(win32clipboard.CF_DIB, data)
+            win32clipboard.CloseClipboard()
+        elif IS_MAC:
+            subprocess.run(['osascript', '-e', f'set the clipboard to (read (POSIX file "{filepath}") as TIFF picture)'])
     except Exception as e:
         print('Clipboard error:', e)
 
@@ -92,12 +107,20 @@ def save_config(cfg):
 
 def list_window_titles():
     titles = []
-    def _enum(hwnd, _):
-        if win32gui.IsWindowVisible(hwnd):
-            title = win32gui.GetWindowText(hwnd)
-            if title.strip():
+    if IS_WIN and HAVE_PYWIN32:
+        def _enum(hwnd, _):
+            if win32gui.IsWindowVisible(hwnd):
+                title = win32gui.GetWindowText(hwnd)
+                if title.strip():
+                    titles.append(title)
+        win32gui.EnumWindows(_enum, None)
+    elif IS_MAC and HAVE_MAC_QUARTZ:
+        windows = Quartz.CGWindowListCopyWindowInfo(Quartz.kCGWindowListOptionOnScreenOnly | Quartz.kCGWindowListExcludeDesktopElements, Quartz.kCGNullWindowID)
+        for win in windows:
+            title = win.get(Quartz.kCGWindowName, '')
+            if title and title.strip():
                 titles.append(title)
-    win32gui.EnumWindows(_enum, None)
+    
     seen = set()
     result = []
     for t in titles:
@@ -105,6 +128,16 @@ def list_window_titles():
             seen.add(t)
             result.append(t)
     return result
+
+def get_mac_window_bounds(title):
+    if not IS_MAC or not HAVE_MAC_QUARTZ: return None
+    windows = Quartz.CGWindowListCopyWindowInfo(Quartz.kCGWindowListOptionOnScreenOnly | Quartz.kCGWindowListExcludeDesktopElements, Quartz.kCGNullWindowID)
+    for win in windows:
+        if win.get(Quartz.kCGWindowName, '') == title:
+            bounds = win.get(Quartz.kCGWindowBounds, {})
+            return int(bounds.get('X', 0)), int(bounds.get('Y', 0)), int(bounds.get('Width', 0)), int(bounds.get('Height', 0))
+    return None
+
 
 class FloatingToolbar(ctk.CTkToplevel):
     def __init__(self, app):
@@ -135,11 +168,14 @@ class FloatingToolbar(ctk.CTkToplevel):
             target_title = self.app.name_var.get().strip() or 'iOSMirror'
             candidates = [target_title, 'Direct3D12 renderer', 'Direct3D11 renderer', 'Direct3D12 Renderer', 'Direct3D11 Renderer', 'Direct3D renderer', 'Direct3D Renderer']
             hwnd = 0
-            for title in candidates:
-                hwnd = win32gui.FindWindow(None, title)
-                if hwnd: break
+            if IS_WIN and HAVE_PYWIN32:
+                for title in candidates:
+                    hwnd = win32gui.FindWindow(None, title)
+                    if hwnd: break
+            elif IS_MAC:
+                hwnd = 1 # Bypass win32gui check on mac
             
-            if hwnd:
+            if IS_WIN and hwnd:
                 rect = win32gui.GetWindowRect(hwnd)
                 x = rect[2]
                 y = rect[1] + 30
@@ -148,6 +184,11 @@ class FloatingToolbar(ctk.CTkToplevel):
                 actual_title = win32gui.GetWindowText(hwnd)
                 if self.app.title_var.get() != actual_title:
                     self.app.title_var.set(actual_title)
+            elif IS_MAC and HAVE_MAC_QUARTZ:
+                bounds = get_mac_window_bounds(target_title)
+                if bounds:
+                    x, y, w, h = bounds
+                    self.geometry(f'+{x+w}+{y+30}')
         except Exception:
             pass
         self.after(200, self._poll_position)
@@ -429,26 +470,44 @@ class MirrorCaptureApp(ctk.CTk):
         fname = f"screenshot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
         outpath = os.path.join(outdir, fname)
 
-        hwnd = win32gui.FindWindow(None, title)
-        if not hwnd:
-            messagebox.showerror("오류", "해당 제목의 창을 찾을 수 없습니다.")
-            return
-        rect = win32gui.GetClientRect(hwnd)
-        pt = win32gui.ClientToScreen(hwnd, (0, 0))
-        x, y = pt[0], pt[1]
-        w, h = rect[2], rect[3]
+        if IS_WIN and HAVE_PYWIN32:
+            hwnd = win32gui.FindWindow(None, title)
+            if not hwnd:
+                messagebox.showerror("오류", "해당 제목의 창을 찾을 수 없습니다.")
+                return
+            rect = win32gui.GetClientRect(hwnd)
+            pt = win32gui.ClientToScreen(hwnd, (0, 0))
+            x, y = pt[0], pt[1]
+            w, h = rect[2], rect[3]
+        elif IS_MAC and HAVE_MAC_QUARTZ:
+            bounds = get_mac_window_bounds(title)
+            if not bounds:
+                messagebox.showerror("오류", "해당 제목의 창을 찾을 수 없습니다.")
+                return
+            x, y, w, h = bounds
+        else:
+            x, y, w, h = 0, 0, 1920, 1080 # Fallback
+
         if w <= 0 or h <= 0: return
 
         temp_bmp = os.path.join(tempfile.gettempdir(), 'mirror_capture_temp.bmp')
-        cmd = [ffmpeg, "-y", "-f", "gdigrab", "-offset_x", str(x), "-offset_y", str(y), "-video_size", f"{w}x{h}", "-i", "desktop", "-frames:v", "1", outpath, "-frames:v", "1", temp_bmp]
+        
+        if IS_WIN:
+            cmd = [ffmpeg, "-y", "-f", "gdigrab", "-offset_x", str(x), "-offset_y", str(y), "-video_size", f"{w}x{h}", "-i", "desktop", "-frames:v", "1", outpath, "-frames:v", "1", temp_bmp]
+        else:
+            cmd = ["screencapture", "-R", f"{x},{y},{w},{h}", outpath]
+
         self.log(f"스크린샷 캡처 중... (창: {title} 내부영역)")
 
         def _run():
             result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, creationflags=CREATE_NO_WINDOW)
             if result.returncode == 0 and os.path.exists(outpath):
                 self.log(f"스크린샷 저장됨: {outpath}")
-                if os.path.exists(temp_bmp):
+                if IS_WIN and os.path.exists(temp_bmp):
                     copy_bmp_to_clipboard(temp_bmp)
+                    self.log("클립보드에 복사되었습니다.")
+                elif IS_MAC:
+                    copy_bmp_to_clipboard(outpath)
                     self.log("클립보드에 복사되었습니다.")
             else:
                 self.log("스크린샷 실패. 창 제목이 정확한지 '창 목록 새로고침'으로 확인하세요.")
@@ -477,26 +536,46 @@ class MirrorCaptureApp(ctk.CTk):
         outpath = os.path.join(outdir, fname)
         self._last_record_path = outpath
 
-        hwnd = win32gui.FindWindow(None, title)
-        if not hwnd:
-            messagebox.showerror("오류", "해당 제목의 창을 찾을 수 없습니다.")
-            return
-        rect = win32gui.GetClientRect(hwnd)
-        pt = win32gui.ClientToScreen(hwnd, (0, 0))
-        x, y = pt[0], pt[1]
-        w, h = rect[2], rect[3]
+        if IS_WIN and HAVE_PYWIN32:
+            hwnd = win32gui.FindWindow(None, title)
+            if not hwnd:
+                messagebox.showerror("오류", "해당 제목의 창을 찾을 수 없습니다.")
+                return
+            rect = win32gui.GetClientRect(hwnd)
+            pt = win32gui.ClientToScreen(hwnd, (0, 0))
+            x, y = pt[0], pt[1]
+            w, h = rect[2], rect[3]
+        elif IS_MAC and HAVE_MAC_QUARTZ:
+            bounds = get_mac_window_bounds(title)
+            if not bounds:
+                messagebox.showerror("오류", "해당 제목의 창을 찾을 수 없습니다.")
+                return
+            x, y, w, h = bounds
+        else:
+            x, y, w, h = 0, 0, 1920, 1080 # Fallback
+
         if w <= 0 or h <= 0: return
         
         w = w if w % 2 == 0 else w - 1
         h = h if h % 2 == 0 else h - 1
 
-        cmd = [
-            ffmpeg, "-y",
-            "-f", "gdigrab", "-framerate", "30",
-            "-offset_x", str(x), "-offset_y", str(y), "-video_size", f"{w}x{h}", "-i", "desktop",
-            "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
-            outpath,
-        ]
+        if IS_WIN:
+            cmd = [
+                ffmpeg, "-y",
+                "-f", "gdigrab", "-framerate", "30",
+                "-offset_x", str(x), "-offset_y", str(y), "-video_size", f"{w}x{h}", "-i", "desktop",
+                "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+                outpath,
+            ]
+        else:
+            cmd = [
+                ffmpeg, "-y",
+                "-f", "avfoundation", "-framerate", "30",
+                "-i", "1:none",
+                "-vf", f"crop={w}:{h}:{x}:{y}",
+                "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+                outpath,
+            ]
         self.log(f"녹화 시작 (내부영역): {outpath}")
         try:
             self.record_proc = subprocess.Popen(
