@@ -26,6 +26,7 @@ jobs:
     - name: Install brew dependencies (ffmpeg, uxplay, create-dmg)
       run: |
         brew update
+        brew tap fdstephani/uxplay
         brew install ffmpeg uxplay create-dmg
 
     - name: Build with PyInstaller
