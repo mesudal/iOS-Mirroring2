@@ -23,11 +23,10 @@ jobs:
         pip install pyinstaller
         pip install -r requirements.txt
 
-    - name: Install brew dependencies (ffmpeg, uxplay, create-dmg)
+    - name: Install brew dependencies (create-dmg)
       run: |
         brew update
-        brew tap fdstephani/uxplay
-        brew install ffmpeg uxplay create-dmg
+        brew install create-dmg
 
     - name: Build with PyInstaller
       run: |
