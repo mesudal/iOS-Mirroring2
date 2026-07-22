@@ -147,7 +147,7 @@ class FloatingToolbar(ctk.CTkToplevel):
         self.attributes('-topmost', True)
         
         self.configure(fg_color="#2b2b2b")
-        self.geometry("100x90")
+        self.geometry("100x135")
         
         # We must keep a reference to stop tracking
         self._tracking = True
@@ -158,12 +158,22 @@ class FloatingToolbar(ctk.CTkToplevel):
         
         self.btn_rec = ctk.CTkButton(self, text='⏺ 녹화', command=self.app.toggle_recording, 
                                      width=80, height=35, fg_color="#bf3a3a", hover_color="#8f2a2a")
-        self.btn_rec.pack(pady=(0, 10), padx=10)
+        self.btn_rec.pack(pady=(0, 5), padx=10)
+        
+        self.btn_stop = ctk.CTkButton(self, text='■ 중지', command=self.app.stop_mirroring, 
+                                      width=80, height=35, fg_color="#dc3545", hover_color="#c82333")
+        self.btn_stop.pack(pady=(0, 10), padx=10)
         
         self._poll_position()
         
     def _poll_position(self):
         if not self._tracking: return
+        
+        # Check if uxplay process has terminated (e.g. user closed the render window)
+        if self.app.uxplay_proc is not None and self.app.uxplay_proc.poll() is not None:
+            self.app.stop_mirroring()
+            return
+            
         try:
             target_title = self.app.name_var.get().strip() or 'iOSMirror'
             candidates = [target_title, 'Direct3D12 renderer', 'Direct3D11 renderer', 'Direct3D12 Renderer', 'Direct3D11 Renderer', 'Direct3D renderer', 'Direct3D Renderer']
@@ -413,8 +423,8 @@ class MirrorCaptureApp(ctk.CTk):
         if not self.title_var.get().strip():
             self.title_var.set(name)
             
-        if HAVE_PYWIN32:
-            self.toolbar = FloatingToolbar(self)
+        self.toolbar = FloatingToolbar(self)
+        self.withdraw() # Hide the main window
 
     def stop_mirroring(self):
         if self.uxplay_proc is None:
@@ -428,6 +438,7 @@ class MirrorCaptureApp(ctk.CTk):
         self.btn_start_mirror.configure(state="normal")
         self.btn_stop_mirror.configure(state="disabled")
         self.mirror_status.configure(text="상태: 꺼짐", text_color="#aaaaaa")
+        self.deiconify() # Restore the main window
 
     def _read_proc_output(self, proc, tag):
         try:
